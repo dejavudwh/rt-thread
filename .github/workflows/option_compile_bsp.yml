@@ -48,9 +48,19 @@ jobs:
           python -c "import tools.menuconfig; tools.menuconfig.touch_env()"
           echo "RTT_ROOT=${{ github.workspace }}" >> $GITHUB_ENV
           echo "RTT_CC=gcc" >> $GITHUB_ENV
-          source ~/.env/env.sh
 
-      - name: Bsp Scons Compile
+      - name: Install Arm ToolChains
+        if: ${{ success() }}
         shell: bash
         run: |
+          wget -q https://github.com/RT-Thread/toolchains-ci/releases/download/v1.3/gcc-arm-none-eabi-10-2020-q4-major-x86_64-linux.tar.bz2
+          sudo tar xjf gcc-arm-none-eabi-10-2020-q4-major-x86_64-linux.tar.bz2 -C /opt
+          /opt/gcc-arm-none-eabi-10-2020-q4-major/bin/arm-none-eabi-gcc --version
+          echo "RTT_EXEC_PATH=/opt/gcc-arm-none-eabi-10-2020-q4-major/bin" >> $GITHUB_ENV
+
+      - name: Bsp Scons Compile
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          source ~/.env/env.sh
           python tools/ci/option_compile_bsp.py
