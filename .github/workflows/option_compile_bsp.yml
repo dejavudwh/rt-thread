@@ -1,0 +1,56 @@
+name: Option Compile BSP
+
+# Controls when the action will run. Triggers the workflow on push or pull request
+# events but only for the master branch
+on:
+  # Runs at 16:00 UTC (BeiJing 00:00) on the 1st of every month
+  schedule:
+    - cron:  '0 16 1 * *'
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - documentation/**
+      - '**/README.md'
+      - '**/README_zh.md'
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - documentation/**
+      - '**/README.md'
+      - '**/README_zh.md'
+
+permissions:
+  contents: read # to fetch code (actions/checkout)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Option Compile BSP
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.8
+
+      - name: Install Tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get -qq install gcc-multilib libncurses5 libncurses5-dev libncursesw5-dev scons
+          sudo python -m pip install --upgrade pip -qq
+          git config --global http.postBuffer 524288000
+          git remote -v
+          git fetch origin
+          python -c "import tools.menuconfig; tools.menuconfig.touch_env()"
+          echo "RTT_ROOT=${{ github.workspace }}" >> $GITHUB_ENV
+          echo "RTT_CC=gcc" >> $GITHUB_ENV
+          source ~/.env/env.sh
+
+      - name: Bsp Scons Compile
+        shell: bash
+        run: |
+          python tools/ci/option_compile_bsp.py
