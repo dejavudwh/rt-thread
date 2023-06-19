@@ -74,7 +74,7 @@ def recompile_bsp(recompile_bsp_dirs):
         logging.info("recomplie bsp: {}".format(dir))
         # result = subprocess.run(['scons', '-C', dir + "\\"], stdout = subprocess.PIPE)
         rtt_root = os.environ["RTT_ROOT"]
-        result = subprocess.run("scons -C " + rtt_root + "\\" + dir, stdout = subprocess.PIPE)
+        result = subprocess.run("scons -C " + rtt_root + "//" + dir, stdout = subprocess.PIPE)
         logging.info(result.stdout.decode())
     
     return dirs
