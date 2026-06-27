@@ -50,6 +50,9 @@
 #define R_AARCH64_JUMP_SLOT     1026
 #define R_AARCH64_RELATIVE      1027
 #define R_AARCH64_IRELATIVE     1032
+#define R_AARCH64_ADR_GOT_PAGE               311
+#define R_AARCH64_LD64_GOT_LO12_NC           312
+#define R_AARCH64_LD32_GOT_LO12_NC           313
 
 #define DBG_TAG           "posix.libdl.arch"
 #define DBG_LVL           DBG_INFO
@@ -296,15 +299,41 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 9: Low 12-bit page offset (ADD / LDR / STR) ──
+    /* ── Group 8b: ADRP to GOT page (ADR_GOT_PAGE) ──
+     * Same instruction encoding as ADR_PREL_PG_HI21.
+     * Targets the GOT entry for the symbol rather than the symbol
+     * directly.  For our loader these are equivalent since sym_val
+     * is already resolved to the absolute address. */
+    case R_AARCH64_ADR_GOT_PAGE:
+    {
+        Elf64_Addr target = (Elf64_Addr)(sym_val + rel->r_addend);
+        Elf64_Addr pc     = (Elf64_Addr)where;
+        Elf64_Sxword off  = (Elf64_Sxword)((target & ~0xFFFULL)
+                                            - (pc & ~0xFFFULL));
+        off >>= 12;
+        if (off != (Elf64_Sxword)(int32_t)off
+            || off < -(1 << 20) || off >= (1 << 20))
+        {
+            LOG_E("R_AARCH64_ADR_GOT_PAGE: target too far (%ld)", off);
+            return -1;
+        }
+        *(uint32_t *)where = adrp_insert_imm(*(uint32_t *)where, (int32_t)off);
+        LOG_D("R_AARCH64_ADR_GOT_PAGE: 0x%p -> imm=%ld", where, off);
+        break;
+    }
+
+    /* ── Group 9: Low 12-bit page offset (ADD / LDR / STR / GOT) ──
      * Formula: (S + A) & 0xFFF
-     * Replaces the 12-bit immediate in ADD or load/store instructions. */
+     * Replaces the 12-bit immediate in ADD or load/store instructions.
+     * LD*_GOT_LO12_NC variants target GOT entries — same encoding. */
     case R_AARCH64_ADD_ABS_LO12_NC:
     case R_AARCH64_LDST8_ABS_LO12_NC:
     case R_AARCH64_LDST16_ABS_LO12_NC:
     case R_AARCH64_LDST32_ABS_LO12_NC:
     case R_AARCH64_LDST64_ABS_LO12_NC:
     case R_AARCH64_LDST128_ABS_LO12_NC:
+    case R_AARCH64_LD64_GOT_LO12_NC:
+    case R_AARCH64_LD32_GOT_LO12_NC:
     {
         uint32_t imm12 = (uint32_t)((sym_val + rel->r_addend) & 0xFFF);
         *(uint32_t *)where = lo12_insert_imm(*(uint32_t *)where, imm12);
