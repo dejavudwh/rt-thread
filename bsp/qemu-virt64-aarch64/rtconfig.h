@@ -189,6 +189,7 @@
 /* end of elm-chan's FatFs, Generic FAT Filesystem Module */
 #define RT_USING_DFS_DEVFS
 #define RT_USING_DFS_ROMFS
+#define RT_USING_DFS_ROMFS_USER_ROOT
 /* end of DFS: device virtual file system */
 
 /* Device Drivers */
@@ -361,6 +362,7 @@
 #define RT_USING_POSIX_DELAY
 #define RT_USING_POSIX_CLOCK
 #define RT_USING_POSIX_TIMER
+#define RT_USING_MODULE
 
 /* Interprocess Communication (IPC) */
 
