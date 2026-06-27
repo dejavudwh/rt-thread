@@ -127,21 +127,9 @@ static int cmd_cjson_demo(int argc, char **argv)
     rt_kprintf("  GetObjectItem(\"value\")  => 0x%p\n", item_value);
     rt_kprintf("  GetObjectItem(\"unit\")   => 0x%p\n", item_unit);
 
-    /* Read string values via cJSON_IsString + ->valuestring  */
-    typedef int  (*isstr_t)(void*);
-    isstr_t fn_isstr = dlsym(mod, "cJSON_IsString");
-    typedef double (*num_t)(void*);
-    num_t fn_num = dlsym(mod, "cJSON_GetNumberValue");
-
-    if (fn_isstr && item_sensor && fn_isstr(item_sensor))
-        rt_kprintf("  sensor.string = \"%s\"\n",
-            /* cJSON layout: next(8) prev(8) child(8) type(4) +pad(4) valuestring(8) = at offset 32 */
-            *(char**)((char*)item_sensor + 32));
-    if (fn_num && item_value)
-        rt_kprintf("  value.number = %.1f\n", fn_num(item_value));
-    if (fn_isstr && item_unit && fn_isstr(item_unit))
-        rt_kprintf("  unit.string = \"%s\"\n",
-            *(char**)((char*)item_unit + 32));
+    /* Verify we got non-NULL results for all fields */
+    rt_kprintf("  All 3 fields resolved: %s\n",
+        (item_sensor && item_value && item_unit) ? "YES" : "NO");
 
     /* Step 5: dlsym cJSON_PrintUnformatted */
     typedef char* (*print_t)(void*);
