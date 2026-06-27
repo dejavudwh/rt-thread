@@ -93,6 +93,80 @@ static int cmd_unload(int argc, char **argv)
 }
 MSH_CMD_EXPORT(cmd_unload, dlmodule unload);
 
+/* ── cjson_demo: dlopen cJSON .so → dlsym API → call each function ── */
+static int cmd_cjson_demo(int argc, char **argv)
+{
+    struct rt_dlmodule *mod = dlmodule_load("/mod_cjson_pure.so");
+    if (!mod) { rt_kprintf("FAILED to load cjson\n"); return -1; }
+
+    rt_kprintf("=== cJSON dlopen OK, %u symbols ===\n", mod->nsym);
+
+    /* Step 1: dlsym cJSON_Parse */
+    typedef void* (*parse_t)(const char*);
+    parse_t fn_parse = dlsym(mod, "cJSON_Parse");
+    if (!fn_parse) { rt_kprintf("dlsym(cJSON_Parse) FAILED\n"); return -1; }
+    rt_kprintf("dlsym(cJSON_Parse) = 0x%p\n", fn_parse);
+
+    /* Step 2: Parse a JSON string */
+    const char *json = "{\"sensor\":\"temp\",\"value\":36.5,\"unit\":\"C\"}";
+    void *root = fn_parse(json);
+    if (!root) { rt_kprintf("cJSON_Parse FAILED\n"); return -1; }
+    rt_kprintf("cJSON_Parse(\"%s\") => 0x%p\n", json, root);
+
+    /* Step 3: dlsym cJSON_GetObjectItem */
+    typedef void* (*get_t)(void*, const char*);
+    get_t fn_get = dlsym(mod, "cJSON_GetObjectItem");
+    if (!fn_get) { rt_kprintf("dlsym(cJSON_GetObjectItem) FAILED\n"); return -1; }
+    rt_kprintf("dlsym(cJSON_GetObjectItem) = 0x%p\n", fn_get);
+
+    /* Step 4: Extract each field */
+    void *item_sensor = fn_get(root, "sensor");
+    void *item_value  = fn_get(root, "value");
+    void *item_unit   = fn_get(root, "unit");
+    rt_kprintf("  GetObjectItem(\"sensor\") => 0x%p\n", item_sensor);
+    rt_kprintf("  GetObjectItem(\"value\")  => 0x%p\n", item_value);
+    rt_kprintf("  GetObjectItem(\"unit\")   => 0x%p\n", item_unit);
+
+    /* Read string values via cJSON_IsString + ->valuestring  */
+    typedef int  (*isstr_t)(void*);
+    isstr_t fn_isstr = dlsym(mod, "cJSON_IsString");
+    typedef double (*num_t)(void*);
+    num_t fn_num = dlsym(mod, "cJSON_GetNumberValue");
+
+    if (fn_isstr && item_sensor && fn_isstr(item_sensor))
+        rt_kprintf("  sensor.string = \"%s\"\n",
+            /* cJSON layout: next(8) prev(8) child(8) type(4) +pad(4) valuestring(8) = at offset 32 */
+            *(char**)((char*)item_sensor + 32));
+    if (fn_num && item_value)
+        rt_kprintf("  value.number = %.1f\n", fn_num(item_value));
+    if (fn_isstr && item_unit && fn_isstr(item_unit))
+        rt_kprintf("  unit.string = \"%s\"\n",
+            *(char**)((char*)item_unit + 32));
+
+    /* Step 5: dlsym cJSON_PrintUnformatted */
+    typedef char* (*print_t)(void*);
+    print_t fn_print = dlsym(mod, "cJSON_PrintUnformatted");
+    if (fn_print) {
+        rt_kprintf("dlsym(cJSON_PrintUnformatted) = 0x%p\n", fn_print);
+        char *out = fn_print(root);
+        rt_kprintf("cJSON_PrintUnformatted => \"%s\"\n", out);
+        rt_free(out);
+    }
+
+    /* Step 6: dlsym cJSON_Delete */
+    typedef void (*del_t)(void*);
+    del_t fn_del = dlsym(mod, "cJSON_Delete");
+    if (fn_del) {
+        rt_kprintf("dlsym(cJSON_Delete) = 0x%p\n", fn_del);
+        fn_del(root);
+        rt_kprintf("cJSON_Delete done\n");
+    }
+
+    rt_kprintf("=== cJSON demo PASSED ===\n");
+    return 0;
+}
+MSH_CMD_EXPORT(cmd_cjson_demo, dlopen cJSON → dlsym API → call each function);
+
 /* ── dlmod_full: complete test for a module ── */
 static int cmd_full(int argc, char **argv)
 {
