@@ -444,7 +444,7 @@ rt_err_t dlmodule_destroy(struct rt_dlmodule* module)
     }
 
     /* destory module */
-    rt_free(module->mem_space);
+    rt_free_align(module->mem_space);
     /* delete module object */
     rt_object_delete((rt_object_t)module);
 

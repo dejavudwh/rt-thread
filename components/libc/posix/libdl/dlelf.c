@@ -55,70 +55,82 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
         linked = RT_TRUE;
     }
 
-    /* get the ELF image size */
+    /* get the ELF image size and max segment alignment */
     has_vstart = RT_FALSE;
     vstart_addr = vend_addr = RT_NULL;
-    for (index = 0; index < elf_module->e_phnum; index++)
     {
-        if (phdr[index].p_type != PT_LOAD)
-            continue;
-
-        LOG_D("LOAD segment: %d, 0x%p, 0x%08x", index, phdr[index].p_vaddr, phdr[index].p_memsz);
-
-        if (phdr[index].p_memsz < phdr[index].p_filesz)
+        rt_uint32_t max_align = 0;
+        for (index = 0; index < elf_module->e_phnum; index++)
         {
-            rt_kprintf("invalid elf: segment %d: p_memsz: %d, p_filesz: %d\n",
-                       index, phdr[index].p_memsz, phdr[index].p_filesz);
-            return RT_NULL;
-        }
-        if (!has_vstart)
-        {
-            vstart_addr = phdr[index].p_vaddr;
-            vend_addr = phdr[index].p_vaddr + phdr[index].p_memsz;
-            has_vstart = RT_TRUE;
-            if (vend_addr < vstart_addr)
+            if (phdr[index].p_type != PT_LOAD)
+                continue;
+
+            LOG_D("LOAD segment: %d, 0x%p, 0x%08x", index, phdr[index].p_vaddr, phdr[index].p_memsz);
+
+            if (phdr[index].p_memsz < phdr[index].p_filesz)
             {
-                LOG_E("invalid elf: segment %d: p_vaddr: %d, p_memsz: %d\n",
-                           index, phdr[index].p_vaddr, phdr[index].p_memsz);
+                rt_kprintf("invalid elf: segment %d: p_memsz: %d, p_filesz: %d\n",
+                           index, phdr[index].p_memsz, phdr[index].p_filesz);
                 return RT_NULL;
             }
-        }
-        else
-        {
-            if (phdr[index].p_vaddr < vend_addr)
-            {
-                LOG_E("invalid elf: segment should be sorted and not overlapped\n");
-                return RT_NULL;
-            }
-            if (phdr[index].p_vaddr > vend_addr + 16)
-            {
-                /* There should not be too much padding in the object files. */
-                LOG_W("warning: too much padding before segment %d", index);
-            }
 
-            vend_addr = phdr[index].p_vaddr + phdr[index].p_memsz;
-            if (vend_addr < phdr[index].p_vaddr)
+            /* track maximum p_align — loader must satisfy this alignment */
+            if (phdr[index].p_align > max_align)
+                max_align = phdr[index].p_align;
+
+            if (!has_vstart)
             {
-                LOG_E("invalid elf: "
-                           "segment %d address overflow\n", index);
-                return RT_NULL;
+                vstart_addr = phdr[index].p_vaddr;
+                vend_addr = phdr[index].p_vaddr + phdr[index].p_memsz;
+                has_vstart = RT_TRUE;
+                if (vend_addr < vstart_addr)
+                {
+                    LOG_E("invalid elf: segment %d: p_vaddr: %d, p_memsz: %d\n",
+                               index, phdr[index].p_vaddr, phdr[index].p_memsz);
+                    return RT_NULL;
+                }
+            }
+            else
+            {
+                if (phdr[index].p_vaddr < vend_addr)
+                {
+                    LOG_E("invalid elf: segment should be sorted and not overlapped\n");
+                    return RT_NULL;
+                }
+                if (phdr[index].p_vaddr > vend_addr + 16)
+                {
+                    LOG_W("warning: too much padding before segment %d", index);
+                }
+
+                vend_addr = phdr[index].p_vaddr + phdr[index].p_memsz;
+                if (vend_addr < phdr[index].p_vaddr)
+                {
+                    LOG_E("invalid elf: "
+                               "segment %d address overflow\n", index);
+                    return RT_NULL;
+                }
             }
         }
+
+        module_size = vend_addr - vstart_addr;
+        LOG_D("module size: %d, vstart_addr: 0x%p, max_align: 0x%x",
+              module_size, vstart_addr, max_align);
+        if (module_size == 0)
+        {
+            LOG_E("Module: size error\n");
+            return -RT_ERROR;
+        }
+
+        /* enforce a minimum alignment of 8 bytes */
+        if (max_align < 8)
+            max_align = 8;
+
+        module->vstart_addr = vstart_addr;
+        module->nref = 0;
+
+        /* allocate module space aligned to ELF p_align requirement */
+        module->mem_space = rt_malloc_align(module_size + max_align, max_align);
     }
-
-    module_size = vend_addr - vstart_addr;
-    LOG_D("module size: %d, vstart_addr: 0x%p", module_size, vstart_addr);
-    if (module_size == 0)
-    {
-        LOG_E("Module: size error\n");
-        return -RT_ERROR;
-    }
-
-    module->vstart_addr = vstart_addr;
-    module->nref = 0;
-
-    /* allocate module space */
-    module->mem_space = rt_malloc(module_size);
     if (module->mem_space == RT_NULL)
     {
         LOG_E("Module: allocate space failed.\n");
@@ -323,39 +335,48 @@ rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule* module, void *module
     rt_ubase_t module_addr = 0, module_size = 0;
     rt_uint8_t *ptr, *strtab, *shstrab;
 
-    /* get the ELF image size */
-    for (index = 0; index < elf_module->e_shnum; index ++)
+    /* get the ELF image size and max section alignment */
     {
-        /* text */
-        if (IS_PROG(shdr[index]) && IS_AX(shdr[index]))
+        rt_uint32_t max_align = 0;
+        for (index = 0; index < elf_module->e_shnum; index ++)
         {
-            module_size += shdr[index].sh_size;
-            module_addr = shdr[index].sh_addr;
+            /* text */
+            if (IS_PROG(shdr[index]) && IS_AX(shdr[index]))
+            {
+                module_size += shdr[index].sh_size;
+                module_addr = shdr[index].sh_addr;
+            }
+            /* rodata */
+            if (IS_PROG(shdr[index]) && IS_ALLOC(shdr[index]))
+            {
+                module_size += shdr[index].sh_size;
+            }
+            /* data */
+            if (IS_PROG(shdr[index]) && IS_AW(shdr[index]))
+            {
+                module_size += shdr[index].sh_size;
+            }
+            /* bss */
+            if (IS_NOPROG(shdr[index]) && IS_AW(shdr[index]))
+            {
+                module_size += shdr[index].sh_size;
+            }
+
+            if (shdr[index].sh_addralign > max_align)
+                max_align = shdr[index].sh_addralign;
         }
-        /* rodata */
-        if (IS_PROG(shdr[index]) && IS_ALLOC(shdr[index]))
-        {
-            module_size += shdr[index].sh_size;
-        }
-        /* data */
-        if (IS_PROG(shdr[index]) && IS_AW(shdr[index]))
-        {
-            module_size += shdr[index].sh_size;
-        }
-        /* bss */
-        if (IS_NOPROG(shdr[index]) && IS_AW(shdr[index]))
-        {
-            module_size += shdr[index].sh_size;
-        }
+
+        /* no text, data and bss on image */
+        if (module_size == 0) return RT_NULL;
+
+        if (max_align < 8)
+            max_align = 8;
+
+        module->vstart_addr = 0;
+
+        /* allocate module space aligned to section alignment requirement */
+        module->mem_space = rt_malloc_align(module_size + max_align, max_align);
     }
-
-    /* no text, data and bss on image */
-    if (module_size == 0) return RT_NULL;
-
-    module->vstart_addr = 0;
-
-    /* allocate module space */
-    module->mem_space = rt_malloc(module_size);
     if (module->mem_space == RT_NULL)
     {
         LOG_E("Module: allocate space failed.\n");
