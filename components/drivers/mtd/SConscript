@@ -7,6 +7,32 @@ depend = ['']
 CPPPATH = [cwd + '/../include']
 group = []
 
+# ==================== Unified MTD Framework ====================
+if GetDepend(['RT_USING_MTD']):
+    src += ['mtd_core.c']
+    depend += ['RT_USING_MTD']
+
+if GetDepend(['RT_USING_MTD_CHAR']):
+    src += ['mtd_char.c']
+    depend += ['RT_USING_MTD_CHAR']
+
+if GetDepend(['RT_USING_MTD_PARTITION']):
+    src += ['mtd_partition.c']
+    depend += ['RT_USING_MTD_PARTITION']
+
+if GetDepend(['RT_USING_MTD_BLOCK']):
+    src += ['mtd_block.c']
+    depend += ['RT_USING_MTD_BLOCK']
+
+if GetDepend(['RT_USING_MTD_NOR_ADAPTER']):
+    src += ['mtd_adapter_nor.c']
+    depend += ['RT_USING_MTD_NOR_ADAPTER']
+
+if GetDepend(['RT_USING_MTD_NAND_ADAPTER']):
+    src += ['mtd_adapter_nand.c']
+    depend += ['RT_USING_MTD_NAND_ADAPTER']
+
+# ==================== Legacy MTD drivers ====================
 if GetDepend(['RT_USING_MTD_NOR']):
     src += ['mtd_nor.c']
     depend += ['RT_USING_MTD_NOR']

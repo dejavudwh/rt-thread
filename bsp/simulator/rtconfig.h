@@ -168,6 +168,22 @@
 #define RT_SERIAL_USING_DMA
 #define RT_SERIAL_RB_BUFSZ 64
 #define RT_USING_RTC
+
+/* MTD: Memory Technology Device framework */
+#define RT_USING_MTD
+#define RT_MTD_MAX_DEVICES 16
+#define RT_USING_MTD_PARTITION
+#define RT_USING_MTD_CHAR
+#define RT_USING_MTD_BLOCK
+#define RT_USING_MTD_NOR_ADAPTER
+#define RT_USING_MTD_NAND_ADAPTER
+
+/* Legacy MTD drivers (for adapter) */
+#define RT_USING_MTD_NOR
+#define RT_USING_MTD_NAND
+#define RT_MTD_NAND_DEBUG
+/* end of MTD */
+
 /* end of Device Drivers */
 
 /* C/C++ and POSIX layer */

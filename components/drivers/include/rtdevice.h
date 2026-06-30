@@ -186,6 +186,10 @@ extern "C" {
 #include "drivers/dev_spi.h"
 #endif /* RT_USING_SPI */
 
+#ifdef RT_USING_MTD
+#include "drivers/mtd.h"
+#endif /* RT_USING_MTD */
+
 #ifdef RT_USING_MTD_NOR
 #include "drivers/mtd_nor.h"
 #endif /* RT_USING_MTD_NOR */

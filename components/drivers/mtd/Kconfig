@@ -1,3 +1,62 @@
+# ==================== Unified MTD Framework ====================
+
+menuconfig RT_USING_MTD
+    bool "Using MTD (Memory Technology Device) framework"
+    default n
+    help
+        Unified MTD framework providing a common abstraction for NOR flash,
+        NAND flash, SPI NOR flash, and other memory technology devices.
+        This framework replaces the previous split NOR/NAND MTD interface
+        with a single unified rt_mtd_info structure.
+
+if RT_USING_MTD
+
+    config RT_MTD_MAX_DEVICES
+        int "Maximum number of MTD devices"
+        default 16
+        help
+            Maximum number of MTD devices (masters + partitions) that
+            can be registered simultaneously.
+
+    config RT_USING_MTD_PARTITION
+        bool "MTD Partition support"
+        default y
+        help
+            Enable partition management for MTD devices. Partitions are
+            themselves full MTD devices with offset-translating operations.
+
+    config RT_USING_MTD_CHAR
+        bool "MTD character device interface"
+        default y
+        help
+            Provide rt_device_read/write/control access to MTD devices
+            (equivalent to Linux /dev/mtdN). Required for most use cases.
+
+    config RT_USING_MTD_BLOCK
+        bool "MTD block device adapter (mtdblock)"
+        default n
+        help
+            Wrap MTD devices as RT_Device_Class_Block, enabling filesystems
+            like FAT (elmfat) to be mounted on raw flash partitions.
+
+    config RT_USING_MTD_NOR_ADAPTER
+        bool "NOR flash driver adapter"
+        default y
+        help
+            Adapter to wrap old rt_mtd_nor_driver_ops into the new
+            unified rt_mtd_ops. Required for existing NOR drivers.
+
+    config RT_USING_MTD_NAND_ADAPTER
+        bool "NAND flash driver adapter"
+        default y
+        help
+            Adapter to wrap old rt_mtd_nand_driver_ops into the new
+            unified rt_mtd_ops. Required for existing NAND drivers.
+
+endif # RT_USING_MTD
+
+# ==================== Legacy NOR driver configs ====================
+
 menuconfig RT_USING_MTD_NOR
     bool "Using MTD Nor Flash device drivers"
     default n
@@ -18,6 +77,8 @@ config RT_USING_MTD_NOR_SPI
     select RT_SFUD_USING_FLASH_INFO_TABLE
     select SFUD_USING_QSPI if RT_USING_QSPI
     default n
+
+# ==================== Legacy NAND driver configs ====================
 
 menuconfig RT_USING_MTD_NAND
     bool "Using MTD Nand Flash device drivers"

@@ -34,7 +34,7 @@ struct sst25_mtd
     struct rt_mtd_nor_device parent;
     FILE *file;
 };
-static struct sst25_mtd _sst25_mtd;
+struct sst25_mtd _sst25_mtd;
 
 static struct rt_mutex flash_lock;
 
@@ -138,7 +138,7 @@ static rt_err_t sst25vfxx_erase_block(struct rt_mtd_nor_device *device, rt_off_t
     return RT_EOK;
 }
 
-const static struct rt_mtd_nor_driver_ops sst25vfxx_mtd_ops =
+const struct rt_mtd_nor_driver_ops sst25vfxx_mtd_ops =
 {
     sst25vfxx_read_id,
     sst25vfxx_read,
@@ -171,7 +171,7 @@ rt_err_t sst25vfxx_mtd_init(const char *nor_name,
     mtd->ops = &sst25vfxx_mtd_ops;
 
     /* initialize mutex */
-    if (rt_mutex_init(&flash_lock, nor_name, RT_IPC_FLAG_PRIO) != RT_EOK)
+    if (rt_mutex_init(&flash_lock, "nor_lock", RT_IPC_FLAG_PRIO) != RT_EOK)
     {
         rt_kprintf("init sd lock mutex failed\n");
     }

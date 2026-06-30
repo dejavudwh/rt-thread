@@ -31,7 +31,7 @@
 #define PAGE_SIZE       (PAGE_DATA_SIZE + OOB_SIZE)
 
 static unsigned char block_data[BLOCK_SIZE];
-static struct rt_mtd_nand_device _nanddrv_file_device;
+struct rt_mtd_nand_device _nanddrv_file_device;
 static FILE *file = NULL;
 
 static rt_uint8_t CountBitsInByte(rt_uint8_t byte)
@@ -338,7 +338,7 @@ static rt_err_t nanddrv_file_erase_block(struct rt_mtd_nand_device *device, rt_u
     return RT_EOK;
 }
 
-const static struct rt_mtd_nand_driver_ops _ops =
+const struct rt_mtd_nand_driver_ops _ops =
 {
     nanddrv_file_read_id,
     nanddrv_file_read_page,
