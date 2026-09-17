@@ -17,11 +17,12 @@
 #define DBG_LVL           DBG_INFO
 #include <rtdbg.h>
 
-int dlmodule_relocate(struct rt_dlmodule *module, Elf32_Rel *rel, Elf32_Addr sym_val)
+int dlmodule_relocate(struct rt_dlmodule *module, Elf32_Rel *rel, Elf32_Addr sym_val, rt_size_t sym_size)
 {
     Elf32_Addr *where, tmp;
     Elf32_Sword addend, offset;
     rt_uint32_t upper, lower, sign, j1, j2;
+    (void)sym_size;   /* sym_size is only used by AArch64's COPY relocation */
 
     where = (Elf32_Addr *)((rt_uint8_t *)module->mem_space
                            + rel->r_offset

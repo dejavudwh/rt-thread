@@ -104,6 +104,46 @@ static int cmd_call2(int argc, char **argv)
 }
 MSH_CMD_EXPORT(cmd_call2, dlopen → dlsym → call(2 args));
 
+/* ── kapi: exercise the complex kernel export surface (kernel_exports.c) ── */
+static int cmd_kapi(int argc, char **argv)
+{
+    struct rt_dlmodule *mod = dlmodule_load("/mod_kapi.so");
+    if (!mod) { rt_kprintf("FAILED to load mod_kapi\n"); return -1; }
+
+    rt_kprintf("=== mod_kapi dlopen OK, %u symbols ===\n", mod->nsym);
+
+    void *fn = dlsym(mod, "kapi_run");
+    if (!fn) { rt_kprintf("dlsym(kapi_run) FAILED\n"); return -1; }
+
+    typedef int (*run_t)(void);
+    int result = ((run_t)fn)();
+
+    rt_kprintf("=== kapi_run => %d (%s) ===\n",
+               result, result == 0 ? "PASS" : "FAIL");
+    return result;
+}
+MSH_CMD_EXPORT(cmd_kapi, complex kernel export surface end-to-end test);
+
+/* ── mbedtls: real open-source library (SHA-256 + AES) end-to-end ── */
+static int cmd_mbedtls(int argc, char **argv)
+{
+    struct rt_dlmodule *mod = dlmodule_load("/mod_mbedtls.so");
+    if (!mod) { rt_kprintf("FAILED to load mod_mbedtls\n"); return -1; }
+
+    rt_kprintf("=== mod_mbedtls dlopen OK, %u symbols ===\n", mod->nsym);
+
+    void *fn = dlsym(mod, "mbedtls_demo");
+    if (!fn) { rt_kprintf("dlsym(mbedtls_demo) FAILED\n"); return -1; }
+
+    typedef int (*demo_t)(void);
+    int result = ((demo_t)fn)();
+
+    rt_kprintf("=== mbedtls_demo => %d (%s) ===\n",
+               result, result == 0 ? "PASS" : "FAIL");
+    return result;
+}
+MSH_CMD_EXPORT(cmd_mbedtls, mbedTLS SHA-256 + AES round-trip test);
+
 /* ── dlmod_unload ── */
 static int cmd_unload(int argc, char **argv)
 {

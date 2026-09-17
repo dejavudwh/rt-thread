@@ -400,7 +400,22 @@ typedef Elf64_Rela      Elf_Rel;
 typedef Elf64_Addr      Elf_Addr;
 #endif
 
-int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val);
+/*
+ * IRELATIVE relocation type — AArch64 only.
+ *
+ * dlelf.c needs this value to defer IRELATIVE relocations to a second pass
+ * (the IFUNC resolver must run after RELATIVE/GLOB_DAT/JUMP_SLOT have already
+ * been applied).  It is deliberately named differently from the local
+ * R_AARCH64_* defines inside arch/aarch64.c to avoid a macro clash.
+ */
+#if defined(__aarch64__)
+#define DL_AARCH64_IRELATIVE    1032
+#define DL_RELOC_DEFERRED(r)    (ELF64_R_TYPE((r)->r_info) == DL_AARCH64_IRELATIVE)
+#else
+#define DL_RELOC_DEFERRED(r)    (0)
+#endif
+
+int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val, rt_size_t sym_size);
 rt_err_t dlmodule_load_shared_object(struct rt_dlmodule *module, void *module_ptr);
 rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule *module, void *module_ptr);
 

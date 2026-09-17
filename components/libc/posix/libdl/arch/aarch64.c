@@ -141,8 +141,19 @@ static inline uint32_t movw_insert_imm(uint32_t insn, uint32_t imm16)
 
 /* ═══════════════════════════════════════════════════════════════
  *  dlmodule_relocate — main relocation dispatch
+ *
+ *  Applies a single relocation entry to the loaded module image.
+ *
+ *  @param module    the module being loaded (mem_space = loaded base)
+ *  @param rel       the relocation entry (Elf_Rel == Elf64_Rela on AArch64)
+ *  @param sym_val   resolved symbol address (S in the ABI formulas); for
+ *                   RELATIVE/IRELATIVE the addend already carries the target
+ *                   and sym_val is ignored
+ *  @param sym_size  symbol size (st_size) from dlelf.c — used only by COPY to
+ *                   know how many bytes to copy from the kernel's definition;
+ *                   zero is treated as "unknown" and falls back to pointer size
  * ═══════════════════════════════════════════════════════════════ */
-int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val)
+int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val, rt_size_t sym_size)
 {
     Elf64_Addr *where;
     Elf64_Addr   base;   /* load offset: mem_space - vstart_addr */
@@ -261,17 +272,28 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
      * are copied. Used when a shared object references a data
      * symbol that is allocated in the main executable. */
     case R_AARCH64_COPY:
-        /* Note: sym_size is not directly available through
-         * the current dlmodule_relocate() API. We copy 8 bytes
-         * (pointer sized) as a safe default.  A full implementation
-         * would pass the symbol's st_size from dlelf.c. */
-        rt_memcpy(where, (void *)(sym_val + rel->r_addend), sizeof(Elf64_Addr));
-        LOG_D("R_AARCH64_COPY: 0x%p", where);
+        /* COPY relocations arise when a .so references a writable data symbol
+         * defined (with an initial value) in the kernel/main program.  The
+         * linker reserved a slot of sym->st_size bytes in the module's .bss;
+         * copy exactly that many bytes from the kernel definition.
+         *
+         * sym_size arrives via the loader (dlelf.c passes sym->st_size).  If
+         * a malformed object reports size 0, fall back to a pointer-sized copy
+         * rather than copying nothing. */
+        if (sym_size == 0)
+            sym_size = sizeof(Elf64_Addr);
+        rt_memcpy(where, (void *)(sym_val + rel->r_addend), sym_size);
+        LOG_D("R_AARCH64_COPY: 0x%p <- 0x%lx (%d bytes)", where, sym_val, sym_size);
         break;
 
     /* ── Group 6: Indirect function (IFUNC) ── [ET_DYN only]
      * The addend points to a resolver function.  Call it to get
-     * the final address, then store the result at `where`. */
+     * the final address, then store the result at `where`.
+     *
+     * NOTE: dlelf.c defers IRELATIVE to a second pass (see
+     * DL_RELOC_DEFERRED) so the resolver runs after RELATIVE/GLOB_DAT/
+     * JUMP_SLOT have been applied; by the time this case is reached those
+     * are already in place. */
     case R_AARCH64_IRELATIVE:
     {
         Elf64_Addr (*ifunc)(void) = (Elf64_Addr (*)(void))(base + rel->r_addend);
@@ -399,14 +421,20 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
 
         imm16 = (uint16_t)(val >> shift);
 
-        /* Non-NC variants: check that the remaining bits are zero
-         * (the linker only emits _NC, but we validate strictly). */
+        /* Non-NC variants: the value must fit into the selected 16-bit
+         * fragment — i.e. every bit above the fragment must be zero.
+         * (G3 is the top fragment, so it trivially passes: val >> 64 == 0.) */
         if (type == R_AARCH64_MOVW_UABS_G0
             || type == R_AARCH64_MOVW_UABS_G1
             || type == R_AARCH64_MOVW_UABS_G2
             || type == R_AARCH64_MOVW_UABS_G3)
         {
-            /* ZERO check: upper bits must be zero after adjustment */
+            if ((val >> (shift + 16)) != 0)
+            {
+                LOG_E("R_AARCH64_MOVW_UABS_G%u: overflow (val=0x%lx)",
+                      shift / 16, val);
+                return -1;
+            }
         }
 
         *(uint32_t *)where = movw_insert_imm(*(uint32_t *)where, imm16);

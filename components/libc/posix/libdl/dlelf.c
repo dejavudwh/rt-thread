@@ -189,12 +189,20 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
             #endif
             LOG_D("relocate symbol %s shndx %d", strtab + sym->st_name, sym->st_shndx);
 
+            /* defer IRELATIVE to a second pass (its resolver must run after
+             * everything else) — handled below the RELR pass. */
+            if (DL_RELOC_DEFERRED(rel))
+            {
+                rel ++;
+                continue;
+            }
+
             if ((sym->st_shndx != SHT_NULL) ||(ELF_ST_BIND(sym->st_info) == STB_LOCAL))
             {
                 Elf_Addr addr;
 
                 addr = (Elf_Addr)(module->mem_space + sym->st_value - vstart_addr);
-                dlmodule_relocate(module, rel, addr);
+                dlmodule_relocate(module, rel, addr, sym->st_size);
             }
             else if (!linked)
             {
@@ -210,7 +218,7 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
                 }
                 else
                 {
-                    dlmodule_relocate(module, rel, addr);
+                    dlmodule_relocate(module, rel, addr, sym->st_size);
                 }
             }
             rel ++;
@@ -286,6 +294,43 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
                     where_addr = base + 63 * 8;
                 }
             }
+        }
+    }
+
+    /* second pass: IRELATIVE relocations (AArch64 only)
+     *
+     * An IFUNC resolver may itself reference data/function pointers that the
+     * first pass has not yet relocated.  ELF requires IRELATIVE to run *after*
+     * all RELATIVE/GLOB_DAT/JUMP_SLOT entries, so we re-scan the .rela sections
+     * and apply only the IRELATIVE entries now.  The resolver address lives in
+     * the relocation addend (base + r_addend); sym_val/sym_size are unused by
+     * the IRELATIVE case in arch/aarch64.c, so we pass zeros. */
+    for (index = 0; index < elf_module->e_shnum; index ++)
+    {
+        rt_ubase_t i, nr_reloc;
+        Elf_Rel *rel;
+
+        #if (defined(__arm__) || defined(__i386__) || (__riscv_xlen == 32))
+        if (!IS_REL(shdr[index]))
+            continue;
+        #elif (defined(__aarch64__) || defined(__x86_64__) || (__riscv_xlen == 64))
+        if (!IS_RELA(shdr[index]))
+            continue;
+        #endif
+
+        rel = (Elf_Rel *)((rt_uint8_t *)module_ptr + shdr[index].sh_offset);
+        nr_reloc = (rt_ubase_t)(shdr[index].sh_size / sizeof(Elf_Rel));
+
+        for (i = 0; i < nr_reloc; i ++)
+        {
+            if (DL_RELOC_DEFERRED(rel))
+            {
+                LOG_D("IRELATIVE: 0x%lx -> resolver @0x%lx",
+                      (unsigned long)rel->r_offset,
+                      (unsigned long)rel->r_addend);
+                dlmodule_relocate(module, rel, (Elf_Addr)0, 0);
+            }
+            rel ++;
         }
     }
 
@@ -607,14 +652,14 @@ rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule* module, void *module
                         addr = (Elf_Addr)data_addr + sym->st_value;
                     }
 
-                    if (addr != 0) dlmodule_relocate(module, rel, addr);
+                    if (addr != 0) dlmodule_relocate(module, rel, addr, sym->st_size);
                 }
                 else if (ELF_ST_TYPE(sym->st_info) == STT_FUNC)
                 {
                     addr = (Elf_Addr)((rt_uint8_t *) module->mem_space - module_addr + sym->st_value);
 
                     /* relocate function */
-                    dlmodule_relocate(module, rel, addr);
+                    dlmodule_relocate(module, rel, addr, sym->st_size);
                 }
             }
             else if (ELF_ST_TYPE(sym->st_info) == STT_FUNC)
@@ -624,7 +669,8 @@ rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule* module, void *module
                                        (Elf_Addr)((rt_uint8_t *)
                                                     module->mem_space
                                                     - module_addr
-                                                    + sym->st_value));
+                                                    + sym->st_value),
+                                       sym->st_size);
             }
             else
             {
@@ -638,7 +684,7 @@ rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule* module, void *module
                     addr = dlmodule_symbol_find((const char *)(strtab + sym->st_name));
                     if (addr != (Elf_Addr)RT_NULL)
                     {
-                        dlmodule_relocate(module, rel, addr);
+                        dlmodule_relocate(module, rel, addr, sym->st_size);
                         LOG_D("symbol addr 0x%x", addr);
                     }
                     else
@@ -648,7 +694,7 @@ rt_err_t dlmodule_load_relocated_object(struct rt_dlmodule* module, void *module
                 else
                 {
                     addr = (Elf_Addr)((rt_uint8_t *) module->mem_space - module_addr + sym->st_value);
-                    dlmodule_relocate(module, rel, addr);
+                    dlmodule_relocate(module, rel, addr, sym->st_size);
                 }
             }
 

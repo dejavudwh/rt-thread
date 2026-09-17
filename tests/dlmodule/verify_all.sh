@@ -1,93 +1,94 @@
 #!/bin/bash
 # ==========================================================================
-# RT-Thread AArch64 dlmodule: QEMU comprehensive verification
+# verify_all.sh — RT-Thread AArch64 dlmodule: QEMU end-to-end verification
 #
-# For each of 7 .so modules:
-#   dlopen → dlsym → call → verify return value
+# Boots the qemu-virt64-aarch64 BSP with modules.fat as the root block device,
+# then drives the msh console through every dlmodule test:
 #
-# Usage: ./run_qemu_test.sh
+#   simple modules   (add/mul, string ops, allocator, sensor/dispatcher tables)
+#   mod_kapi.so      (complex kernel export surface: data symbols, const LUT,
+#                     function-pointer struct, IPC, callback)
+#   mod_mbedtls.so   (real open-source library: SHA-256 + AES-128-CBC)
+#   mod_stress.so    (ring buffer + filter dispatch + CRC + allocator)
+#
+# Usage:
+#   ./build.sh          # first rebuild the .so files + modules.fat
+#   ./verify_all.sh
+#
+# The BSP directory is located relative to this script (two levels up:
+# tests/dlmodule -> rt-thread).  Override with RTT_BSP if needed.
 # ==========================================================================
+set -uo pipefail
 
-BSP=/home/ubuntu/cluade-workspaces/rt-thread-aarch64/bsp/qemu-virt64-aarch64
-IMG=/home/ubuntu/cluade-workspaces/rt-thread-aarch64/tests/dlmodule/modules.fat
-cd "$BSP"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BSP="${RTT_BSP:-$HERE/../../bsp/qemu-virt64-aarch64}"
+IMG="$HERE/modules.fat"
 
-# ── Cleanup ──
-sudo fuser -k virtio.qcow2 2>/dev/null || true
-pkill -9 qemu-system-aarch 2>/dev/null || true
-sleep 1; rm -f /tmp/qemu-serial.log /tmp/qemu-run.log
+QEMU="qemu-system-aarch64"
 
-# ── Boot QEMU ──
-qemu-system-aarch64 \
-  -M virt,gic-version=2 -cpu max -smp 1 -m 128 \
-  -kernel rtthread.bin -append 'console=ttyAMA0 earlycon' \
-  -nographic -serial pty -monitor none \
-  -drive if=none,file=virtio.qcow2,format=qcow2,id=blk0 \
-  -device virtio-blk-device,drive=blk0 \
-  -drive if=none,file="$IMG",format=raw,id=blk1 \
-  -device virtio-blk-device,drive=blk1 \
-  &>/tmp/qemu-run.log &
-QPID=$!
+# ── Sanity checks ────────────────────────────────────────────────────────
+[ -f "$BSP/rtthread.bin" ] || { echo "ERROR: rtthread.bin not found in $BSP (run build.sh + scons first)"; exit 1; }
+[ -f "$IMG" ]            || { echo "ERROR: $IMG not found (run build.sh first)"; exit 1; }
+command -v "$QEMU" >/dev/null || { echo "ERROR: $QEMU not found"; exit 1; }
 
-# ── Find PTY ──
-for i in $(seq 1 20); do
-  PTY=$(grep -Po '/dev/pts/\d+' /tmp/qemu-run.log 2>/dev/null | head -1)
-  [ -n "$PTY" ] && break; sleep 1
-done
-[ -z "$PTY" ] && { echo "ERROR: QEMU didn't start"; cat /tmp/qemu-run.log; exit 1; }
-echo "QEMU PID=$QPID  PTY=$PTY"
-sleep 12
+# ── Cleanup any stale QEMU holding the image ──────────────────────────────
+pkill -9 "$QEMU" 2>/dev/null || true
+sleep 1
+rm -f /tmp/dlmodule-verify.log
 
-# ── Send all test commands, then read all output ──
+# ── Boot QEMU, drive msh via stdio, capture everything ───────────────────
+# Commands are fed on stdin after a delay to let the kernel reach msh.
+# -smp 4 matches RT_CPUS_NR in the BSP config; -cpu max + gic-version=2 is the
+# BSP's default qemu.py configuration.
 {
-  echo -e "mount vda0 / elm\r";           sleep 3
+  sleep 12
 
-  # 1. mod_minimal.so: add + mul
-  echo -e "echo ===1.mod_minimal===\r";   sleep 1
-  echo -e "cmd_call2 /mod_minimal.so add 10 20\r"; sleep 5
-  echo -e "cmd_call2 /mod_minimal.so mul 30 3\r";  sleep 5
+  # mount modules.fat (attached as the virtio block device) at root
+  printf 'mount vda0 / elm\r'; sleep 3
 
-  # 2. mod_ext1.so: rt_kprintf via PLT
-  echo -e "echo ===2.mod_ext1===\r";      sleep 1
-  echo -e "cmd_load /mod_ext1.so\r";      sleep 5
+  # ── simple modules ──
+  printf 'cmd_call2 /mod_minimal.so add 10 20\r';   sleep 3
+  printf 'cmd_call2 /mod_minimal.so mul 30 3\r';    sleep 3
+  printf 'cmd_load  /mod_ext2.so\r';                sleep 3
+  printf 'cmd_call  /mod_string_util.so get_stats 0\r'; sleep 3
+  printf 'cmd_call2 /mod_sensor2.so process_sample 500 1\r'; sleep 3
+  printf 'cmd_load  /mod_dispatcher.so\r';          sleep 3
+  printf 'cmd_call  /mod_allocator.so mod_malloc 128\r'; sleep 3
 
-  # 3. mod_ext2.so: strlen/memcpy/strcmp via PLT
-  echo -e "echo ===3.mod_ext2===\r";      sleep 1
-  echo -e "cmd_load /mod_ext2.so\r";      sleep 5
+  # ── complex kernel export surface ──
+  printf 'cmd_kapi\r'; sleep 6
 
-  # 4. mod_string_util.so: get_stats via dlsym
-  echo -e "echo ===4.mod_string_util===\r"; sleep 1
-  echo -e "cmd_call /mod_string_util.so get_stats 0\r"; sleep 5
+  # ── real open-source library ──
+  printf 'cmd_mbedtls\r'; sleep 8
 
-  # 5. mod_sensor2.so: process_sample x3 filters
-  echo -e "echo ===5.mod_sensor2===\r";   sleep 1
-  echo -e "cmd_call2 /mod_sensor2.so process_sample 500 1\r"; sleep 5
-  echo -e "cmd_call2 /mod_sensor2.so process_sample 999 0\r"; sleep 5
-  echo -e "cmd_call2 /mod_sensor2.so process_sample 100 4\r"; sleep 5
+  # ── stress module ──
+  printf 'cmd_load  /mod_stress.so\r';              sleep 3
+  printf 'cmd_call  /mod_stress.so stress_quick_check 0\r'; sleep 4
 
-  # 6. mod_dispatcher.so: 10 handlers
-  echo -e "echo ===6.mod_dispatcher===\r"; sleep 1
-  echo -e "cmd_load /mod_dispatcher.so\r";         sleep 5
+  # ── RELR compressed-relocation regression (BUGS.md #1) ──
+  printf 'cmd_call2 /mod_relr.so relr_add 10 20\r'; sleep 4
+  printf 'cmd_call2 /mod_relr.so relr_sub 100 37\r'; sleep 4
+  printf 'cmd_call2 /mod_relr.so relr_mul 6 7\r';   sleep 4
 
-  # 7. mod_allocator.so: rt_malloc wrapper
-  echo -e "echo ===7.mod_allocator===\r";  sleep 1
-  echo -e "cmd_call /mod_allocator.so mod_malloc 128\r"; sleep 5
+  # ── list loaded modules ──
+  printf 'list_module\r'; sleep 2
+  sleep 2
+} | timeout 120 "$QEMU" -M virt,gic-version=2 -cpu max -smp 4 -m 128 \
+    -kernel "$BSP/rtthread.bin" -append 'console=ttyAMA0 earlycon' \
+    -serial stdio -display none -monitor none \
+    -drive if=none,file="$IMG",format=raw,id=blk0 \
+    -device virtio-blk-device,drive=blk0 \
+    > /tmp/dlmodule-verify.log 2>&1
 
-  # 8. list all loaded modules
-  echo -e "echo ===MODULE_LIST===\r";      sleep 1
-  echo -e "list_module\r";                 sleep 2
+# ── Print a filtered summary of the key pass/fail lines ──────────────────
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "  AArch64 dlmodule — QEMU verification results"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
 
-} > "$PTY" &
-
-# ── Read all output with a single timeout ──
-timeout 120 cat "$PTY" > /tmp/qemu-serial.log 2>/dev/null || true
-
-# ── Cleanup ──
-kill $QPID 2>/dev/null; wait $QPID 2>/dev/null || true
+grep -a -E "=> |ALL CHECKS PASSED|PASS|FAIL|FAILED|dlsym|module loaded|mount .* succeed|callback|semaphore|SHA-256|AES-128" \
+    /tmp/dlmodule-verify.log || true
 
 echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "  QEMU dlopen → dlsym → call — ALL 7 MODULES"
-echo "═══════════════════════════════════════════════════════════"
-echo ""
-cat /tmp/qemu-serial.log
+echo "── full log: /tmp/dlmodule-verify.log ──"

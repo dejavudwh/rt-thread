@@ -2,7 +2,19 @@
 
 ## Overview
 
-This patch adds **complete AArch64 ELF shared object loading** to RT-Thread's `dlmodule` subsystem without requiring RT-Smart. 23 relocation types are supported, covering the full AArch64 ELF ABI except TLS. Verified in QEMU with 8 test modules.
+This patch adds **AArch64 ELF shared object (ET_DYN, `.so`) loading** to RT-Thread's `dlmodule` subsystem without requiring RT-Smart. See `GUIDE.md` for the end-to-end usage walkthrough.
+
+**Verified coverage** (QEMU, `verify_all.sh`):
+
+| Scope | Relocation types | Status |
+|-------|------------------|--------|
+| ET_DYN primary path | `NONE`, `JUMP_SLOT`, `GLOB_DAT`, `RELATIVE`, `ABS64`, `RELR` (compressed) | ✅ **run-tested** end-to-end |
+| Implemented but unreachable from `.so` | `COPY`, `IRELATIVE` | ⚠️ dead code on AArch64 `.so` (see below) |
+| ET_REL instruction-patching | `CALL26/JUMP26`, `ADR_PREL_PG_HI21`, `ADR_GOT_PAGE`, `ADD_ABS_LO12_NC`, `LDST*_ABS_LO12_NC`, `LD*_GOT_LO12_NC`, `MOVW_UABS_G0..G3(_NC)`, `ABS16/32`, `PREL16/32/64` | ❌ **not run-tested** — only reachable from `.o`, whose loader path is partial (see `BUGS.md` #2/#8) |
+
+The `arch/aarch64.c` handler implements the full AArch64 relocation table, but only the **ET_DYN types are exercised at runtime**; the 19 instruction-patching types require ET_REL loading, which is currently marked "partial support". Two cases (`COPY`, `IRELATIVE`) are additionally unreachable from a PIC shared object: `-fPIC` emits `GLOB_DAT` (not `COPY`) for cross-boundary data, and the bare-metal `aarch64-none-elf-gcc` does not support the `ifunc` attribute.
+
+Test modules: 8 base `.so` + `mod_kapi` (complex kernel-symbol-export surface) + `mod_mbedtls` (mbedTLS 2.28.9, SHA-256 + AES-128-CBC) + `mod_relr` (RELR regression).
 
 ## Architecture
 
@@ -12,24 +24,33 @@ dlmodule (`components/libc/posix/libdl/`) is RT-Thread's in-kernel dynamic modul
 
 | File | Change | Purpose |
 |------|--------|---------|
-| `components/libc/posix/libdl/arch/aarch64.c` | **NEW** | AArch64 relocation handler (23 types) |
+| `components/libc/posix/libdl/arch/aarch64.c` | **NEW** | AArch64 relocation handler (full table; ET_DYN types run-tested, ET_REL types code-only) |
 | `components/libc/posix/libdl/dlelf.c` | `rt_malloc` → `rt_malloc_align` | Respect ELF segment alignment (p_align) |
 | `components/libc/posix/libdl/dlmodule.c` | `rt_free` → `rt_free_align` | Match aligned allocation |
 | `src/defunct.c` | `#include <dlmodule.h>` | Fix compile with RT_USING_MODULE |
 | `bsp/qemu-virt64-aarch64/rtconfig.h` | `RT_USING_MODULE` | Enable feature |
 | `bsp/qemu-virt64-aarch64/rtconfig.py` | `--defsym=_fini=0` | newlib 4.4.0 compatibility |
-| `bsp/qemu-virt64-aarch64/applications/test_cmd.c` | **NEW** | MSH test commands (cmd_load/cmd_call/cmd_call2) |
-| `tests/dlmodule/mod_*.c` | **NEW** | 8 test .so module sources |
+| `bsp/qemu-virt64-aarch64/applications/test_cmd.c` | **NEW** | MSH test commands (cmd_load/cmd_call/cmd_call2/cmd_kapi/cmd_mbedtls) |
+| `bsp/qemu-virt64-aarch64/applications/kernel_exports.c` | **NEW** | Complex kernel symbol export surface (data/LUT/fn-ptr-struct/IPC/callback) |
+| `tests/dlmodule/mod_*.c` | **NEW** | test .so module sources (base + mod_kapi + mod_mbedtls_demo) |
 | `tests/dlmodule/mod_*.so` | **compiled** | Pre-built .so for direct QEMU testing |
 | `tests/dlmodule/modules.fat` | **NEW** | FAT disk image with all .so files |
+| `tests/dlmodule/build.sh` | **NEW** | Rebuild all .so from source + repack modules.fat |
+| `tests/dlmodule/verify_all.sh` | **NEW** | QEMU end-to-end verification (relative paths) |
+| `tests/dlmodule/GUIDE.md` | **NEW** | End-to-end usage guide |
 
 ---
 
 ## Relocation Type Reference
 
-### Complete Type List (23 types, AARCH64_ABI 2024Q2)
+### Complete Type List (AARCH64_ABI 2024Q2)
 
-#### Dynamic Relocations (.rela.dyn / .rela.plt)
+> ⚠️ **Coverage caveat**: this lists every relocation type the `arch/aarch64.c` handler
+> implements. Only the types under "Dynamic Relocations" are reachable from a `.so` and
+> therefore run-tested (see the coverage table in the Overview). The "Instruction-Patching
+> Relocations" block is ET_REL-only and not exercised at runtime.
+
+#### Dynamic Relocations (.rela.dyn / .rela.plt / .relr.dyn)
 
 | Type | Value | Formula | Code |
 |------|-------|---------|------|
@@ -40,15 +61,16 @@ dlmodule (`components/libc/posix/libdl/`) is RT-Thread's in-kernel dynamic modul
 | `R_AARCH64_PREL64` | 260 | S + A - P | `*where = sym_val + addend - where` |
 | `R_AARCH64_PREL32` | 261 | S + A - P (trunc32, ±2GiB) | `*(s32*)where = val; overflow check` |
 | `R_AARCH64_PREL16` | 262 | S + A - P (trunc16, ±32KiB) | `*(s16*)where = val; overflow check` |
-| `R_AARCH64_COPY` | 1024 | memory copy | `memcpy(where, sym_val+addend, 8)` |
+| `R_AARCH64_COPY` | 1024 | memory copy | `memcpy(where, sym_val+addend, sym_size)` — **not reachable from `.so`** |
 | `R_AARCH64_GLOB_DAT` | 1025 | S + A | `*where = sym_val + addend` |
 | `R_AARCH64_JUMP_SLOT` | 1026 | S + A | `*where = sym_val + addend` |
 | `R_AARCH64_RELATIVE` | 1027 | B(S) + A | `*where = base + addend` |
-| `R_AARCH64_IRELATIVE` | 1032 | Indirect(B+P) | `*where = ifunc_resolver()` |
+| `R_AARCH64_IRELATIVE` | 1032 | Indirect(B+P) | `*where = ifunc_resolver()` — **not reachable from `.so`** (bare-metal gcc lacks `ifunc`) |
 
 #### Instruction-Patching Relocations
 
-These modify AArch64 instruction encodings in-place.
+These modify AArch64 instruction encodings in-place. **ET_REL (`.o`) only** — not reachable
+from a PIC shared object, and therefore not exercised at runtime (see coverage caveat above).
 
 | Type | Value | Operation | Helper |
 |------|-------|-----------|--------|
@@ -123,22 +145,28 @@ movw_insert_imm(insn, imm16)         — encode MOVZ/MOVK imm16
 | `mod_dispatcher.so` | Event system, 22 RELATIVE entries | RELATIVE ×22 + JUMP_SLOT ×3 |
 | `mod_allocator.so` | rt_malloc/rt_free/rt_calloc wrapper | JUMP_SLOT ×5 |
 | `mod_reloc_full.so` | ABS64/RELATIVE/GLOB_DAT/JUMP_SLOT + op table + large const | RELATIVE ×4 + GLOB_DAT ×3 + JUMP_SLOT ×2 |
+| `mod_kapi.so` | Complex kernel export surface (data/LUT/fn-ptr-struct/IPC/callback) | GLOB_DAT ×4 + JUMP_SLOT ×10 |
+| `mod_mbedtls.so` | mbedTLS 2.28.9 (SHA-256 + AES-128-CBC), self-contained | ABS64 ×1 + JUMP_SLOT ×24 |
+| `mod_relr.so` | RELR compressed relocations (global fn-ptr table) | RELR ×3 + GLOB_DAT ×1 |
 
 ### Relocation Type Coverage Matrix
 
-| Type | mod_ minimal | mod_ ext1 | mod_ ext2 | mod_ string | mod_ sensor2 | mod_ dispatch | mod_ alloc | mod_ reloc |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| NONE | — | — | — | — | — | — | — | — |
-| ABS64 | — | — | — | — | — | — | — | ✓ |
-| GLOB_DAT | — | — | — | 2 | — | — | 1 | 3 |
-| JUMP_SLOT | 2 | 1 | 4 | 4 | 1 | 3 | 5 | 2 |
-| RELATIVE | — | — | — | — | 6 | 22 | — | 4 |
+| Type | mod_ minimal | mod_ ext1 | mod_ ext2 | mod_ string | mod_ sensor2 | mod_ dispatch | mod_ alloc | mod_ reloc | mod_ kapi | mod_ mbedtls | mod_ relr |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| NONE | — | — | — | — | — | — | — | — | — | — | — |
+| ABS64 | — | — | — | — | — | — | — | ✓ | — | ✓ | — |
+| GLOB_DAT | — | — | — | 2 | — | — | 1 | 3 | 4 | — | 1 |
+| JUMP_SLOT | 2 | 1 | 4 | 4 | 1 | 3 | 5 | 2 | 10 | 24 | — |
+| RELATIVE | — | — | — | — | 6 | 22 | — | 4 | — | — | — |
+| RELR | — | — | — | — | — | — | — | — | — | — | 3 |
 
-> Note: COPY, IRELATIVE, CALL26, JUMP26, ADR_PREL_PG_HI21, ADD_ABS_LO12_NC,
-> LDST*_ABS_LO12_NC, MOVW_UABS_G0-G3, PREL32, PREL16, ABS32, ABS16
-> are primarily generated in ET_REL (.o) objects and are exercised by the
-> static linker when building .so files. Their implementations are
-> verified through code review + unit structure against the ARM ELF ABI.
+> **Note on the remaining types**: `COPY`, `IRELATIVE`, `CALL26`, `JUMP26`,
+> `ADR_PREL_PG_HI21`, `ADR_GOT_PAGE`, `ADD_ABS_LO12_NC`, `LDST*_ABS_LO12_NC`,
+> `LD*_GOT_LO12_NC`, `MOVW_UABS_G0-G3`, `PREL32/16`, `ABS32/16` are **not exercised
+> at runtime**. The instruction-patching group is only reachable from ET_REL (`.o`),
+> whose loader path is partial (see `BUGS.md` #2/#8); `COPY`/`IRELATIVE` are additionally
+> unreachable from a PIC shared object. They are implemented in `arch/aarch64.c` but
+> verified only by code review against the ARM ELF ABI.
 
 ### QEMU Verification
 
@@ -174,6 +202,23 @@ mod_malloc(128) → return valid pointer             ✓
 === 8. mod_reloc_full ===
 test_abs64() → 66 (0x42)                          ✓
 op_table[0]=add  op_table[1]=sub  op_table[2]=mul ✓
+
+=== 9. mod_kapi ===
+kapi_state initial = 0xa5a5a5a5 ...                ✓ (GLOB_DAT data symbol)
+kapi_lut[2]={ch2,50%} kapi_lut[7]={ch7,400%}       ✓ (const LUT)
+ops->read(5) -> 8 bytes                            ✓ (fn-ptr struct indirect call)
+semaphore take/release round-trip                  ✓ (IPC accessors)
+callback fired with code=42                        ✓ (module→kernel→module)
+ALL CHECKS PASSED                                  ✓
+
+=== 10. mod_mbedtls ===
+SHA-256("abc") = ba7816bf8f01cfea...               ✓ (NIST vector)
+AES-128-CBC round-trip (32 bytes)                  ✓ (encrypt→decrypt)
+mbedtls_calloc/free -> rt_calloc/rt_free           ✓ (heap boundary)
+ALL CHECKS PASSED                                  ✓
+
+=== 11. mod_relr ===
+relr_add(10,20)=30  relr_sub(100,37)=63  relr_mul(6,7)=42  ✓ (RELR)
 ```
 
 ## Critical Fix: Page-Aligned Allocation
@@ -191,12 +236,17 @@ ET_REL) and uses `rt_malloc_align()` to satisfy the requirement.
 2. **FP/SIMD context**: Modules using floating-point may crash if the kernel
    doesn't save/restore FP registers across module calls.
 3. **DT_NEEDED**: Dependencies not auto-loaded. User must manually load
-   dependent .so files first.
-4. **DT_INIT_ARRAY**: Standard ELF init/fini arrays not yet parsed.
-   Modules must export `module_init`/`module_cleanup` by name.
+   dependent .so files first (or statically link them into one .so).
+4. **ET_REL (`.o`)**: only partial support — the instruction-patching relocation
+   types (`CALL26`/`ADR_*`/`MOVW_G*`/…) are only reachable from `.o`, whose
+   symbol-table/address handling has known defects (see `BUGS.md` #2/#8). Prefer `.so`.
 
 ## Upstream Plan
 
 Submitted as `feature/aarch64-dlmodule` on `dejavudwh/rt-thread` (private fork).
-Intent to submit to RT-Thread upstream after DT_INIT_ARRAY and PT_DYNAMIC
-support are added (Phase 2).
+Intent to submit to RT-Thread upstream after PT_DYNAMIC support is added (Phase 2).
+
+> Since the first version this branch has additionally fixed, and verified in QEMU:
+> `DT_INIT_ARRAY`/constructor execution, `dlsym` data symbols (`STT_OBJECT`),
+> `e_machine` validation, `dlerror()` real errors, RELR compressed relocations,
+> and COPY relocation size handling (was fixed 8-byte) — see `BUGS.md`.

@@ -1,0 +1,61 @@
+# ==========================================================================
+#  Makefile.template — 把任意 C 语言工程编译成单个 dlmodule .so
+#
+#  用法：复制到你的模块目录，改下面「配置区」，然后 `make`。
+#
+#  配置区（按需改）：
+#    MODULE       输出 .so 名（不带扩展名）
+#    SRCS         源文件列表（支持 wildcard）
+#    INCDIRS      头文件搜索目录（-I）
+#    DEFS         宏定义（-D）
+#    OPT          优化级别（默认 -O2）
+#    EXTRA_LDFLAGS 额外链接参数（如 -Wl,-e,module_init,-z,now）
+#
+#  ABI 注意（详见 GUIDE.md §6「模块与内核的编译参数对照」）：
+#    -march=armv8-a  必须与内核一致（模块指令集不得高于内核）
+#    -shared -fPIC -nostdlib  是动态库本质，必须保留（模块不自带 C 运行库）
+#    模块用的 memcpy/memset/strlen/printf 等全部由内核 dlsyms.c 导出解析
+# ==========================================================================
+
+# ── 工具链：优先 RTT_EXEC_PATH，否则取 PATH 里 aarch64-none-elf-gcc ──
+TCDIR := $(if $(RTT_EXEC_PATH),$(RTT_EXEC_PATH),$(patsubst %/,%,$(dir $(shell command -v aarch64-none-elf-gcc 2>/dev/null))))
+CC    := $(TCDIR)/aarch64-none-elf-gcc
+
+# ═══════════════════════ 配置区（按需修改）═══════════════════════
+MODULE  := my_module
+SRCS    := $(wildcard *.c)                 # 或显式列出：a.c b.c c.c
+INCDIRS :=
+DEFS    :=
+OPT     := -O2
+EXTRA_LDFLAGS :=
+
+# 多文件库 + 裁剪配置的示例（mbedTLS 场景），取消注释并指向你的检出：
+#   SRCS    := /path/to/mbedtls/library/aes.c \
+#              /path/to/mbedtls/library/sha256.c \
+#              /path/to/mbedtls/library/platform_util.c \
+#              /path/to/mbedtls/library/platform.c \
+#              mod_mbedtls_demo.c
+#   INCDIRS := . /path/to/mbedtls/include
+#   DEFS    := MBEDTLS_CONFIG_FILE='"mbedtls_config_min.h"'
+# ════════════════════════════════════════════════════════════════
+
+# ── 编译选项（不要改动，除非你清楚 ABI 后果）──
+ARCH    := -march=armv8-a
+CFLAGS  := $(ARCH) -shared -fPIC -nostdlib $(OPT) -Wall \
+           $(addprefix -I,$(INCDIRS)) $(addprefix -D,$(DEFS))
+
+OBJS    := $(SRCS:.c=.o)
+TARGET  := $(MODULE).so
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(EXTRA_LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJS) $(TARGET)
