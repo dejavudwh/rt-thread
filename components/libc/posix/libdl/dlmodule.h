@@ -86,4 +86,8 @@ void dlmodule_extract_name(const char *path, char *name, int name_size);
 
 rt_ubase_t dlmodule_symbol_find(const char *sym_str);
 
+/* record an error string for the POSIX dlerror() API */
+void dlmodule_seterror(const char *fmt, ...);
+void dlmodule_clearerror(void);
+
 #endif

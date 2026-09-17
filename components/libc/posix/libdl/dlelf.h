@@ -66,6 +66,28 @@ typedef rt_uint16_t             Elf64_Section;
 #define ET_DYN                  3              /* Shared object file */
 #define ET_CORE                 4              /* Core file */
 
+/* e_machine values (generic ELF) */
+#define EM_386                  3
+#define EM_ARM                  40
+#define EM_X86_64               62
+#define EM_AARCH64              183
+#define EM_RISCV                243
+
+/* expected e_machine for the architecture this loader is built for */
+#if defined(__aarch64__)
+#define EM_EXPECTED             EM_AARCH64
+#elif defined(__x86_64__)
+#define EM_EXPECTED             EM_X86_64
+#elif defined(__riscv_xlen) && (__riscv_xlen == 64)
+#define EM_EXPECTED             EM_RISCV
+#elif defined(__i386__)
+#define EM_EXPECTED             EM_386
+#elif defined(__arm__)
+#define EM_EXPECTED             EM_ARM
+#elif defined(__riscv_xlen) && (__riscv_xlen == 32)
+#define EM_EXPECTED             EM_RISCV
+#endif
+
 /* ELF Header */
 typedef struct elfhdr
 {
@@ -336,6 +358,10 @@ typedef struct
 #define SHT_SHLIB               10             /* reserved - purpose unknown */
 #define SHT_DYNSYM              11             /* dynamic symbol table section */
 #define SHT_NUM                 12             /* number of section types */
+#define SHT_INIT_ARRAY          14             /* array of init functions */
+#define SHT_FINI_ARRAY          15             /* array of fini functions */
+#define SHT_PREINIT_ARRAY       16             /* array of pre-init functions */
+#define SHT_RELR                19             /* RELR relative relocations (64-bit only) */
 #define SHT_LOPROC              0x70000000     /* reserved range for processor */
 #define SHT_HIPROC              0x7fffffff     /* specific section header types */
 #define SHT_LOUSER              0x80000000     /* reserved range for application */

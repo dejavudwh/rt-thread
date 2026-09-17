@@ -11,6 +11,29 @@
 #include <dlmodule.h>
 #include <dlfcn.h>
 
+/* ── dlmod_dlerror: load a module and print dlerror() result ── */
+static int cmd_dlerror(int argc, char **argv)
+{
+    const char *err;
+
+    if (argc < 2)
+    {
+        rt_kprintf("Usage: dlmod_dlerror <file.so>\n");
+        return 0;
+    }
+
+    struct rt_dlmodule *mod = dlmodule_load(argv[1]);
+    err = dlerror();
+    if (!mod)
+    {
+        rt_kprintf("load FAILED, dlerror() = \"%s\"\n", err ? err : "(null)");
+        return -1;
+    }
+    rt_kprintf("load OK, dlerror() = %s\n", err ? err : "(null)");
+    return 0;
+}
+MSH_CMD_EXPORT(cmd_dlerror, load a module and print dlerror());
+
 /* ── dlmod_load: dlopen + list symbols ── */
 static int cmd_load(int argc, char **argv)
 {

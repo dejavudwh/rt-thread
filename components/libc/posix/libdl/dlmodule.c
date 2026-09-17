@@ -533,6 +533,7 @@ struct rt_dlmodule* dlmodule_load(const char* filename)
         rt_memcmp(elf_module->e_ident, ELFMAG, SELFMAG) != 0)
     {
         rt_kprintf("Module: magic error\n");
+        dlmodule_seterror("magic error: not an ELF/RTM module");
         goto __exit;
     }
 
@@ -540,6 +541,19 @@ struct rt_dlmodule* dlmodule_load(const char* filename)
     if ((elf_module->e_ident[EI_CLASS] != ELFCLASS32)&&(elf_module->e_ident[EI_CLASS] != ELFCLASS64))
     {
         rt_kprintf("Module: ELF class error\n");
+        dlmodule_seterror("ELF class error");
+        goto __exit;
+    }
+
+    /* check ELF machine: reject modules built for a different architecture.
+     * Without this, a wrong-arch .so is silently patched as if it were the
+     * native ISA, corrupting memory — see tests/dlmodule/BUGS.md #5. */
+    if (elf_module->e_machine != EM_EXPECTED)
+    {
+        rt_kprintf("Module: ELF machine error (got %u, expected %u)\n",
+                   elf_module->e_machine, (unsigned)EM_EXPECTED);
+        dlmodule_seterror("ELF machine error (got %u, expected %u)",
+                          elf_module->e_machine, (unsigned)EM_EXPECTED);
         goto __exit;
     }
 
@@ -553,6 +567,12 @@ struct rt_dlmodule* dlmodule_load(const char* filename)
 
     if (elf_module->e_type == ET_REL)
     {
+        /* NOTE: ET_REL (.o) loading is only PARTIALLY supported.
+         * The symbol table is empty (only .dynsym is parsed, ET_REL has
+         * .symtab) and section-relative relocation addresses are not
+         * mapped to the flat load layout — see tests/dlmodule/BUGS.md
+         * #2 and #8.  Use ET_DYN (`-shared -fPIC`) instead. */
+        rt_kprintf("Module: warning: ET_REL loading is only partially supported, prefer ET_DYN\n");
         ret = dlmodule_load_relocated_object(module, module_ptr);
     }
     else if (elf_module->e_type == ET_DYN)
@@ -562,11 +582,16 @@ struct rt_dlmodule* dlmodule_load(const char* filename)
     else
     {
         rt_kprintf("Module: unsupported elf type\n");
+        dlmodule_seterror("unsupported ELF type %u", elf_module->e_type);
         goto __exit;
     }
 
     /* check return value */
-    if (ret != RT_EOK) goto __exit;
+    if (ret != RT_EOK)
+    {
+        dlmodule_seterror("load failed (relocation/symbol error)");
+        goto __exit;
+    }
 
     /* release module data */
     rt_free(module_ptr);
@@ -589,6 +614,9 @@ struct rt_dlmodule* dlmodule_load(const char* filename)
     {
         module->init_func(module);
     }
+
+    /* success: clear any stale error so a later dlerror() returns NULL */
+    dlmodule_clearerror();
 
     return module;
 
@@ -710,6 +738,14 @@ struct rt_dlmodule* dlmodule_load_custom(const char* filename, struct rt_dlmodul
         goto __exit;
     }
 
+    /* check ELF machine */
+    if (elf_module->e_machine != EM_EXPECTED)
+    {
+        rt_kprintf("Module: ELF machine error (got %u, expected %u)\n",
+                   elf_module->e_machine, (unsigned)EM_EXPECTED);
+        goto __exit;
+    }
+
     module = dlmodule_create();
     if (!module) goto __exit;
 
@@ -763,6 +799,9 @@ struct rt_dlmodule* dlmodule_load_custom(const char* filename, struct rt_dlmodul
     {
         module->init_func(module);
     }
+
+    /* success: clear any stale error so a later dlerror() returns NULL */
+    dlmodule_clearerror();
 
     return module;
 

@@ -153,13 +153,36 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
     base  = (Elf64_Addr)((rt_uint8_t *)module->mem_space
                           - module->vstart_addr);
 
+    /* ─────────────────────────────────────────────────────────────
+     * Relocation type taxonomy — which ELF object type generates each:
+     *
+     * [ET_DYN]  Shared objects (.so, `-shared -fPIC`) — the PRIMARY target
+     *           of dlmodule. The static linker resolves all module-local
+     *           references at link time, so a .so only emits "write an
+     *           absolute address" and "add load bias" relocations:
+     *             NONE, ABS64, COPY, GLOB_DAT, JUMP_SLOT, RELATIVE,
+     *             IRELATIVE, plus RELR (handled in dlelf.c).
+     *
+     * [ET_REL]  Relocatable objects (.o) — produced only during partial
+     *           linking and needing a full link at load time, including
+     *           in-place instruction patching:
+     *             ABS32/16, PREL64/32/16, CALL26/JUMP26,
+     *             ADR_PREL_PG_HI21, ADR_GOT_PAGE, ADD_ABS_LO12_NC,
+     *             LDST*_ABS_LO12_NC, LD*_GOT_LO12_NC, MOVW_UABS_G0..G3.
+     *
+     * NOTE: the [ET_REL] instruction-patching cases below are only
+     * reachable when loading bare .o objects, which the loader does not
+     * fully support (see tests/dlmodule/BUGS.md #2/#8). The .so path —
+     * the intended use case — never reaches them because the static
+     * linker already resolved those references.
+     * ───────────────────────────────────────────────────────────── */
     switch (ELF64_R_TYPE(rel->r_info))
     {
-    /* ── Group 1: No operation ── */
+    /* ── Group 1: No operation ── [ET_DYN + ET_REL] */
     case R_AARCH64_NONE:
         break;
 
-    /* ── Group 2: Absolute data relocations ──
+    /* ── Group 2: Absolute data relocations ── [ABS64: ET_DYN (copy-reloc-ish) + ET_REL; ABS32/16: ET_REL only]
      * Formula: S + A   (symbol value + rel->r_addend)
      * Write the resolved absolute address (possibly truncated). */
     case R_AARCH64_ABS64:
@@ -177,7 +200,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         LOG_D("R_AARCH64_ABS16: 0x%p -> 0x%x", where, *(uint16_t *)where);
         break;
 
-    /* ── Group 3: PC-relative data relocations ──
+    /* ── Group 3: PC-relative data relocations ── [ET_REL only]
      * Formula: S + A - P   (symbol + addend - location)
      * where P = runtime address of the relocation site. */
     case R_AARCH64_PREL64:
@@ -213,7 +236,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 4: Dynamic linker stubs ──
+    /* ── Group 4: Dynamic linker stubs ── [ET_DYN only — the core .so path]
      * GLOB_DAT and JUMP_SLOT: fill GOT/PLT entry with S + A.
      * RELATIVE: adjust pointer by load base + addend.
      * These are the most common types in .rela.dyn and .rela.plt. */
@@ -232,7 +255,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         LOG_D("R_AARCH64_RELATIVE: 0x%p -> 0x%lx", where, *where);
         break;
 
-    /* ── Group 5: Copy ──
+    /* ── Group 5: Copy ── [ET_DYN only — cross-DSO data copy reloc]
      * The memory at `where` is overwritten with the data of the
      * symbol. sym_val points to the source data, st_size bytes
      * are copied. Used when a shared object references a data
@@ -246,7 +269,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         LOG_D("R_AARCH64_COPY: 0x%p", where);
         break;
 
-    /* ── Group 6: Indirect function (IFUNC) ──
+    /* ── Group 6: Indirect function (IFUNC) ── [ET_DYN only]
      * The addend points to a resolver function.  Call it to get
      * the final address, then store the result at `where`. */
     case R_AARCH64_IRELATIVE:
@@ -257,7 +280,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 7: PC-relative branch (CALL26 / JUMP26) ──
+    /* ── Group 7: PC-relative branch (CALL26 / JUMP26) ── [ET_REL only]
      * Used for direct BL / B instructions within ±128 MiB.
      * Formula: (S + A - P) >> 2  → imm26 */
     case R_AARCH64_CALL26:
@@ -277,7 +300,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 8: ADRP page offset (ADR_PREL_PG_HI21) ──
+    /* ── Group 8: ADRP page offset (ADR_PREL_PG_HI21) ── [ET_REL only]
      * Formula: Page(S + A) - Page(P)
      * Masks off low 12 bits, computes page difference, encodes as
      * 21-bit signed immediate in the ADRP instruction. */
@@ -299,7 +322,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 8b: ADRP to GOT page (ADR_GOT_PAGE) ──
+    /* ── Group 8b: ADRP to GOT page (ADR_GOT_PAGE) ── [ET_REL only]
      * Same instruction encoding as ADR_PREL_PG_HI21.
      * Targets the GOT entry for the symbol rather than the symbol
      * directly.  For our loader these are equivalent since sym_val
@@ -322,7 +345,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 9: Low 12-bit page offset (ADD / LDR / STR / GOT) ──
+    /* ── Group 9: Low 12-bit page offset (ADD / LDR / STR / GOT) ── [ET_REL only]
      * Formula: (S + A) & 0xFFF
      * Replaces the 12-bit immediate in ADD or load/store instructions.
      * LD*_GOT_LO12_NC variants target GOT entries — same encoding. */
@@ -341,7 +364,7 @@ int dlmodule_relocate(struct rt_dlmodule *module, Elf_Rel *rel, Elf_Addr sym_val
         break;
     }
 
-    /* ── Group 10: MOVW / MOVK absolute address fragments ──
+    /* ── Group 10: MOVW / MOVK absolute address fragments ── [ET_REL only]
      * Formula: selected 16-bit chunk of (S + A)
      * G0 = bits[15:0], G1 = bits[31:16], G2 = bits[47:32], G3 = bits[63:48]
      * _NC suffix means no overflow check (the linker already checked). */

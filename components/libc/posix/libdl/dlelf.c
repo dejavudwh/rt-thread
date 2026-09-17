@@ -223,6 +223,72 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
         }
     }
 
+    /* handle RELR compressed relative relocations (.relr.dyn)
+     *
+     * Modern linkers (--pack-dyn-relocs=relr / -z pack-relative-relocs)
+     * compress the RELATIVE relocations into a bitmap instead of emitting
+     * .rela.dyn entries.  Without this pass, function-pointer tables in
+     * such .so files are left un-relocated and calling them jumps to a
+     * stale offset (kernel trap).  See tests/dlmodule/BUGS.md #1.
+     *
+     * Encoding (ELF for the Arm 64-bit Architecture, "RELR"):
+     *   each 8-byte entry whose bit[0]==0 is the address of a relocation;
+     *   each entry whose bit[0]==1 is a bitmap over the 63 addresses that
+     *   follow the *previous* relocated address (bit N => previous+8*(N+1)).
+     * The base load offset (base = mem_space - vstart_addr) is added to
+     * each resolved address, mirroring R_AARCH64_RELATIVE. */
+    for (index = 0; index < elf_module->e_shnum; index++)
+    {
+        if (shdr[index].sh_type != SHT_RELR)
+            continue;
+
+        {
+            Elf64_Addr *relr = (Elf64_Addr *)((rt_uint8_t *)module_ptr + shdr[index].sh_offset);
+            rt_ubase_t nr_relr = (rt_ubase_t)(shdr[index].sh_size / sizeof(Elf64_Addr));
+            Elf64_Addr  where_addr = 0;   /* last relocated address (r_offset) */
+            rt_ubase_t  i;
+
+            for (i = 0; i < nr_relr; i++)
+            {
+                Elf64_Addr entry = relr[i];
+
+                if ((entry & 1) == 0)
+                {
+                    /* direct relocation at `entry` */
+                    where_addr = entry;
+                    Elf64_Addr *where = (Elf64_Addr *)((rt_uint8_t *)module->mem_space
+                                                       + where_addr - module->vstart_addr);
+                    *where += (Elf64_Addr)((rt_uint8_t *)module->mem_space
+                                           - module->vstart_addr);
+                    LOG_D("RELR: 0x%lx", (unsigned long)where_addr);
+                }
+                else
+                {
+                    /* bitmap over the 63 addresses following where_addr:
+                     * bit N => address (where_addr + 8*(N+1)) */
+                    Elf64_Addr bitmap = entry >> 1;
+                    Elf64_Addr base   = where_addr;
+                    int bit;
+
+                    for (bit = 0; bit < 63; bit++)
+                    {
+                        if (bitmap & (1ULL << bit))
+                        {
+                            Elf64_Addr addr = base + 8 * (bit + 1);
+                            Elf64_Addr *where = (Elf64_Addr *)((rt_uint8_t *)module->mem_space
+                                                               + addr - module->vstart_addr);
+                            *where += (Elf64_Addr)((rt_uint8_t *)module->mem_space
+                                                   - module->vstart_addr);
+                            LOG_D("RELR: 0x%lx", (unsigned long)addr);
+                        }
+                    }
+                    /* a bitmap covers 63 slots after the base address */
+                    where_addr = base + 63 * 8;
+                }
+            }
+        }
+    }
+
     /* construct module symbol table */
     rt_uint8_t *shstrab;
     shstrab = (rt_uint8_t *)module_ptr +
@@ -246,8 +312,11 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
 
         for (i = 0; i < shdr[index].sh_size / sizeof(Elf_Sym); i++)
         {
+            /* export both functions (STT_FUNC) and data objects (STT_OBJECT)
+             * so that dlsym() can resolve variables too, per POSIX */
             if ((ELF_ST_BIND(symtab[i].st_info) == STB_GLOBAL) &&
-                (ELF_ST_TYPE(symtab[i].st_info) == STT_FUNC))
+                ((ELF_ST_TYPE(symtab[i].st_info) == STT_FUNC) ||
+                 (ELF_ST_TYPE(symtab[i].st_info) == STT_OBJECT)))
                 count ++;
         }
 
@@ -259,7 +328,8 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
             rt_size_t length;
 
             if ((ELF_ST_BIND(symtab[i].st_info) != STB_GLOBAL) ||
-                (ELF_ST_TYPE(symtab[i].st_info) != STT_FUNC))
+                ((ELF_ST_TYPE(symtab[i].st_info) != STT_FUNC) &&
+                 (ELF_ST_TYPE(symtab[i].st_info) != STT_OBJECT)))
                 continue;
 
             length = rt_strlen((const char *)(strtab + symtab[i].st_name)) + 1;
@@ -305,6 +375,38 @@ rt_err_t dlmodule_load_shared_object(struct rt_dlmodule* module, void *module_pt
             if ((flag & 0x03) == 0x03)
             {
                 break;
+            }
+        }
+    }
+
+    /* run .init_array constructors (DT_INIT_ARRAY)
+     *
+     * Standard ELF shared objects put initialization code in .init_array
+     * (__attribute__((constructor))).  Each entry is a function pointer that
+     * has already been relocated (RELATIVE / RELR), so we just call each one
+     * in order.  Skipping this leaves such modules silently uninitialized —
+     * see tests/dlmodule/BUGS.md #4.
+     *
+     * Must run after relocation and before the caller invokes module_init. */
+    for (index = 0; index < elf_module->e_shnum; index++)
+    {
+        if (shdr[index].sh_type != SHT_INIT_ARRAY)
+            continue;
+
+        {
+            rt_ubase_t i;
+            rt_ubase_t nr = (rt_ubase_t)(shdr[index].sh_size / sizeof(Elf_Addr));
+            Elf_Addr *array = (Elf_Addr *)((rt_uint8_t *)module->mem_space
+                                           + shdr[index].sh_addr - module->vstart_addr);
+
+            for (i = 0; i < nr; i++)
+            {
+                if (array[i] != 0)
+                {
+                    void (*ctor)(void) = (void (*)(void))((rt_ubase_t)array[i]);
+                    LOG_D("init_array[%u]: 0x%p", i, (void *)array[i]);
+                    ctor();
+                }
             }
         }
     }
